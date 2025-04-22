@@ -2,10 +2,6 @@
 Module for Axolotl trainer sequence parallelism mixin and training context manager
 """
 
-import logging
-from contextlib import contextmanager
-
-import torch
 import torch.distributed as dist
 from datasets import Dataset
 from torch import nn
@@ -17,8 +13,6 @@ from axolotl.monkeypatch.attention.ring_attn import (
     get_ring_attn_group,
     update_ring_attn_params,
 )
-
-LOG = logging.getLogger(__name__)
 
 
 class SequenceParallelMixin:
