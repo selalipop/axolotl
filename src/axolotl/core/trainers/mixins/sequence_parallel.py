@@ -2,6 +2,7 @@
 Module for Axolotl trainer sequence parallelism mixin and training context manager
 """
 
+import torch
 import torch.distributed as dist
 from datasets import Dataset
 from torch import nn
@@ -9,10 +10,10 @@ from torch.utils.data import DistributedSampler, Sampler
 from torch.utils.hooks import RemovableHandle
 
 from axolotl.monkeypatch.attention.ring_attn import (
-    RingAttnFunc,
     get_ring_attn_group,
     update_ring_attn_params,
 )
+from axolotl.utils.schemas.enums import RingAttnFunc
 
 
 class SequenceParallelMixin:
