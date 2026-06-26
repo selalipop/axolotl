@@ -6,6 +6,8 @@ concept of middlewares to wrap each dataset. We'll use the collators later on to
 datasets.
 """
 
+import os
+
 from datasets import Dataset, IterableDataset
 
 from axolotl.utils.logging import get_logger
@@ -47,7 +49,9 @@ class TokenizedPromptDataset(Dataset):
         map_kwargs = {}
         if self.prompt_tokenizer.supports_batched:
             map_kwargs["batched"] = True
-            map_kwargs["batch_size"] = 1_000
+            map_kwargs["batch_size"] = int(
+                os.environ.get("AXOLOTL_TOKENIZE_BATCH_SIZE", "16")
+            )
 
         if (
             hasattr(self.prompt_tokenizer, "filter_rows")

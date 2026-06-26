@@ -23,6 +23,17 @@ if TYPE_CHECKING:
 # Configure the logger
 LOG = get_logger(__name__)
 LOG.setLevel("INFO")
+BREAKPOINT_MARKER = "<<--breakpoint-->>"
+
+
+def _strip_breakpoint_markers(value):
+    if isinstance(value, str):
+        return value.replace(BREAKPOINT_MARKER, "")
+    if isinstance(value, list):
+        return [_strip_breakpoint_markers(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_breakpoint_markers(val) for key, val in value.items()}
+    return value
 
 
 def _extract_input_ids(result):
@@ -421,6 +432,10 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
         if not self.is_prompt_batched(prompt) or not self.supports_batched:
             return self._tokenize_single_prompt(prompt)
 
+        fast_batch = self._tokenize_batch_fast_plain_chat(prompt)
+        if fast_batch is not None:
+            return fast_batch
+
         res = defaultdict(lambda: [])
         feature_names = list(prompt.keys())
 
@@ -438,7 +453,238 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
 
         return dict(res)
 
+    def _can_use_fast_plain_chat(self) -> bool:
+        if self.train_on_inputs:
+            return False
+        if self.prompter.processor is not None:
+            return False
+        if set(self.roles_to_train or []) != {"assistant"}:
+            return False
+        if self.prompter.message_field_training:
+            return False
+        if self.prompter.message_field_training_detail:
+            return False
+
+        template = self.prompter.chat_template or ""
+        if "<|im_start|>assistant\\n" not in template:
+            return False
+        if "<|im_end|>\\n" not in template:
+            return False
+        return True
+
+    def _prepare_fast_plain_chat_prompt(self, prompt: dict):
+        tools = self._get_tools(prompt)
+        if tools:
+            return None
+
+        turns = self.get_conversation_thread(prompt)
+        if not turns:
+            return None
+        if any(turn.get("role") not in {"system", "user", "assistant"} for turn in turns):
+            return None
+        detail_keys = {"training", "training_detail", "reasoning_training_detail"}
+        if any(detail_keys.intersection(turn) for turn in turns):
+            return None
+
+        return self._render_plain_chat_with_train_spans(turns)
+
+    def _labels_from_offsets(
+        self,
+        input_ids: list[int],
+        offsets: list[tuple[int, int]],
+        train_spans: list[tuple[int, int]],
+    ) -> list[int]:
+        labels = [IGNORE_TOKEN_ID] * len(input_ids)
+        span_idx = 0
+        train_spans.sort()
+        for token_idx, (tok_start, tok_end) in enumerate(offsets):
+            if tok_start == tok_end:
+                continue
+            while span_idx < len(train_spans) and train_spans[span_idx][1] <= tok_start:
+                span_idx += 1
+            if span_idx >= len(train_spans):
+                break
+            span_start, span_end = train_spans[span_idx]
+            if span_start < tok_end and span_end > tok_start:
+                labels[token_idx] = input_ids[token_idx]
+        return labels
+
+    def _tokenize_batch_fast_plain_chat(self, prompt: dict[str, Any]):
+        if not self._can_use_fast_plain_chat():
+            return None
+
+        feature_names = list(prompt.keys())
+        rendered_texts = []
+        span_batches = []
+        for row in zip(*prompt.values(), strict=False):
+            row_prompt = dict(zip(feature_names, row, strict=False))
+            prepared = self._prepare_fast_plain_chat_prompt(row_prompt)
+            if prepared is None:
+                return None
+            rendered, train_spans = prepared
+            rendered_texts.append(rendered)
+            span_batches.append(train_spans)
+
+        if not rendered_texts:
+            return {}
+
+        encoded = self.tokenizer(
+            rendered_texts,
+            add_special_tokens=False,
+            return_offsets_mapping=True,
+        )
+        offset_batches = encoded.pop("offset_mapping")
+        results = defaultdict(lambda: [])
+
+        for idx, offsets in enumerate(offset_batches):
+            input_ids = encoded["input_ids"][idx]
+            labels = self._labels_from_offsets(
+                input_ids,
+                offsets,
+                span_batches[idx],
+            )
+
+            for key, value in encoded.items():
+                results[key].append(value[idx])
+            results["labels"].append(labels)
+            if "attention_mask" not in encoded:
+                results["attention_mask"].append([1] * len(input_ids))
+
+        return dict(results)
+
+    def _tokenize_single_prompt_fast_plain_chat(self, prompt: dict):
+        """Fast path for plain ChatML-style assistant-only SFT."""
+        if not self._can_use_fast_plain_chat():
+            return None
+
+        prepared = self._prepare_fast_plain_chat_prompt(prompt)
+        if prepared is None:
+            return None
+        rendered, train_spans = prepared
+
+        encoded = self.tokenizer(
+            rendered,
+            add_special_tokens=False,
+            return_offsets_mapping=True,
+        )
+        input_ids = encoded["input_ids"]
+        offsets = encoded.pop("offset_mapping")
+        labels = self._labels_from_offsets(input_ids, offsets, train_spans)
+
+        result = dict(encoded)
+        result["input_ids"] = input_ids
+        result["labels"] = labels
+        result.setdefault("attention_mask", [1] * len(input_ids))
+        return result
+
+    def _render_plain_chat_with_train_spans(self, turns: list[dict]):
+        if turns and turns[0].get("role") == "system":
+            system_message = str(turns[0].get("content", ""))
+            loop_messages = turns[1:]
+        else:
+            system_message = ""
+            loop_messages = turns
+
+        last_user_idx = -1
+        for idx, message in enumerate(loop_messages):
+            if message.get("role") == "user":
+                last_user_idx = idx
+
+        text = f"<|im_start|>system\n{system_message}<|im_end|>\n"
+        train_spans: list[tuple[int, int]] = []
+        last_trainable_eot_span: tuple[int, int] | None = None
+
+        for idx, message in enumerate(loop_messages):
+            role = message.get("role")
+            if role == "assistant":
+                content, train_offset = self._plain_chat_assistant_content(
+                    message, idx, last_user_idx
+                )
+                header = "<|im_start|>assistant\n"
+                content_start = len(text) + len(header)
+                content_end = content_start + len(content)
+                eot_start = content_end
+                eot_end = eot_start + len("<|im_end|>")
+                text += f"{header}{content}<|im_end|>\n"
+
+                train_start = content_start + train_offset
+                if train_start < content_end:
+                    train_spans.append((train_start, content_end))
+
+                eot_span = (eot_start, eot_end)
+                last_trainable_eot_span = eot_span
+                if self.train_on_eot in {"turn", "all"} or self.train_on_eos in {
+                    "turn",
+                    "all",
+                }:
+                    train_spans.append(eot_span)
+            elif role in {"user", "system"}:
+                text += (
+                    f"<|im_start|>{role}\n"
+                    f"{str(message.get('content', ''))}<|im_end|>\n"
+                )
+            else:
+                text += (
+                    f"<|im_start|>{role}\n"
+                    f"{str(message.get('content', ''))}<|im_end|>\n"
+                )
+
+        if last_trainable_eot_span and (
+            self.train_on_eot == "last" or self.train_on_eos == "last"
+        ):
+            train_spans.append(last_trainable_eot_span)
+
+        return text, train_spans
+
+    def _plain_chat_assistant_content(
+        self, message: dict, message_idx: int, last_user_idx: int
+    ) -> tuple[str, int]:
+        thinking_key = self.prompter.template_thinking_key
+        reasoning = message.get(thinking_key) if thinking_key else None
+        train_offset = 0
+        if isinstance(reasoning, str) and reasoning.strip():
+            content = (
+                "<think>\n"
+                + reasoning
+                + "\n</think>\n"
+                + str(message.get("content") or "")
+            )
+        else:
+            content = message.get("content") or ""
+            if (
+                isinstance(content, str)
+                and "<think>" not in content
+                and "</think>" not in content
+            ):
+                content = "<think></think>" + content
+                train_offset = len("<think></think>")
+
+        content = str(content)
+        truncate_history_thinking = self.prompter.chat_template_kwargs.get(
+            "truncate_history_thinking", True
+        )
+        if not (truncate_history_thinking and message_idx < last_user_idx):
+            leading_ws = len(content) - len(content.lstrip())
+            stripped = content.strip()
+            train_offset = max(0, train_offset - leading_ws)
+            return stripped, min(train_offset, len(stripped))
+
+        if "<think>" in content and "</think>" in content:
+            content = "<think></think>" + content.split("</think>")[-1]
+            train_offset = len("<think></think>")
+        elif "<think>" in content:
+            content = content.split("<think>")[0]
+            train_offset = 0
+        leading_ws = len(content) - len(content.lstrip())
+        stripped = content.strip()
+        train_offset = max(0, train_offset - leading_ws)
+        return stripped, min(train_offset, len(stripped))
+
     def _tokenize_single_prompt(self, prompt: dict) -> Dict[str, List[int]]:
+        fast_result = self._tokenize_single_prompt_fast_plain_chat(prompt)
+        if fast_result is not None:
+            return fast_result
+
         # Old simple legacy behavior that works reliably.
         if (
             not self.roles_to_train
@@ -879,7 +1125,12 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
             possible_sys_turn["role"] != "system"
             and self.prompter.field_system in prompt
         ):
-            turn = {"role": "system", "content": prompt[self.prompter.field_system]}
+            turn = {
+                "role": "system",
+                "content": _strip_breakpoint_markers(
+                    prompt[self.prompter.field_system]
+                ),
+            }
             turns.append(turn)
 
         for message in messages:
@@ -1011,7 +1262,7 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                             )
                             raise
 
-        return transformed_message
+        return _strip_breakpoint_markers(transformed_message)
 
     def _get_images(self, prompt):
         return prompt.get(self.images, None)
