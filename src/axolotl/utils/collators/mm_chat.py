@@ -55,5 +55,10 @@ class MultiModalChatDataCollator(DataCollatorMixin):
 
         # Process the labels
         batch["labels"] = self.processing_strategy.process_labels(batch["input_ids"])
+        loss_weights = self.processing_strategy.process_loss_weights(
+            batch["input_ids"]
+        )
+        if loss_weights is not None:
+            batch["loss_weights"] = loss_weights
 
         return batch

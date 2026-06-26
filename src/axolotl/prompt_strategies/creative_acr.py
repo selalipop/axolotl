@@ -176,6 +176,7 @@ def load_answer(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
 
@@ -185,6 +186,7 @@ def load_critique(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
 
@@ -194,4 +196,5 @@ def load_revise(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )

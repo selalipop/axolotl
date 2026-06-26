@@ -76,7 +76,7 @@ class PygmalionPromptTokenizingStrategy(PromptTokenizingStrategy):
                 labels,
                 pad_token_id=self.tokenizer.pad_token_id,
             )
-        return result
+        return self._add_prompt_loss_weights_from_labels(result)
 
 
 class PygmalionPrompter:
@@ -99,5 +99,9 @@ class PygmalionPrompter:
 
 def load(tokenizer, cfg):
     return PygmalionPromptTokenizingStrategy(
-        PygmalionPrompter(), tokenizer, cfg.train_on_inputs, cfg.sequence_len
+        PygmalionPrompter(),
+        tokenizer,
+        cfg.train_on_inputs,
+        cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )

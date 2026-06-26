@@ -16,6 +16,7 @@
 
 import abc
 import importlib
+import os
 import sys
 from abc import abstractmethod
 from contextlib import suppress
@@ -503,10 +504,14 @@ class TrainerBuilderBase(abc.ABC):
         elif self.cfg.eval_steps:
             training_args_kwargs["eval_strategy"] = "steps"
             training_args_kwargs["eval_steps"] = self.cfg.eval_steps
-            training_args_kwargs["eval_on_start"] = True
+            training_args_kwargs["eval_on_start"] = (
+                os.getenv("AXOLOTL_EVAL_ON_START", "1") != "0"
+            )
         elif self.cfg.eval_strategy:
             training_args_kwargs["eval_strategy"] = self.cfg.eval_strategy
-            training_args_kwargs["eval_on_start"] = True
+            training_args_kwargs["eval_on_start"] = (
+                os.getenv("AXOLOTL_EVAL_ON_START", "1") != "0"
+            )
 
     def _configure_reporting(self, training_args_kwargs: dict):
         report_to = []

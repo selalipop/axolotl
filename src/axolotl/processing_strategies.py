@@ -61,6 +61,7 @@ class ProcessingStrategy:
         train_on_eos: Optional[str] = None,
         role_boundaries_override: Optional[list[dict]] = None,
         field_messages: str | list[str] | tuple[str, ...] | None = None,
+        prompt_loss_weight: float | None = 0.0,
     ):
         self.processor = processor
         self.chat_template = chat_template
@@ -77,6 +78,7 @@ class ProcessingStrategy:
         # empty list is honored as "no trainable roles" (masks everything);
         # only ``None`` falls back to the default of assistant-only.
         self.train_on_inputs = bool(train_on_inputs)
+        self.prompt_loss_weight = float(prompt_loss_weight or 0.0)
         self.roles_to_train = (
             list(roles_to_train) if roles_to_train is not None else ["assistant"]
         )
@@ -129,10 +131,11 @@ class ProcessingStrategy:
             boundaries_repr = f"{len(self.role_boundaries)} built-in"
         LOG.info(
             "ProcessingStrategy init: class=%s train_on_inputs=%s "
-            "roles_to_train=%s train_on_eos=%s boundaries_source=%s "
-            "boundaries=%s",
+            "prompt_loss_weight=%s roles_to_train=%s train_on_eos=%s "
+            "boundaries_source=%s boundaries=%s",
             type(self).__name__,
             self.train_on_inputs,
+            self.prompt_loss_weight,
             self.roles_to_train,
             self.train_on_eos,
             source,
@@ -377,6 +380,27 @@ class ProcessingStrategy:
         keep = self._mask_non_assistant_keep(labels)
         labels[~keep] = -100
         return labels
+
+    def _hard_keep_mask(self, input_ids: Tensor) -> Tensor:
+        """Return True for tokens that are not pad/media hard ignores."""
+        original_train_on_inputs = self.train_on_inputs
+        self.train_on_inputs = True
+        try:
+            return self.process_labels(input_ids) != -100
+        finally:
+            self.train_on_inputs = original_train_on_inputs
+
+    def process_loss_weights(self, input_ids: Tensor) -> Tensor | None:
+        if self.train_on_inputs or self.prompt_loss_weight <= 0.0:
+            return None
+
+        hard_keep = self._hard_keep_mask(input_ids)
+        train_keep = self._mask_non_assistant_keep(input_ids) & hard_keep
+
+        weights = torch.zeros_like(input_ids, dtype=torch.float32)
+        weights[hard_keep & ~train_keep] = self.prompt_loss_weight
+        weights[train_keep] = 1.0
+        return weights
 
     def process_labels(self, input_ids: Tensor) -> Tensor:
         keep = self._mask_non_assistant_keep(input_ids)
@@ -1440,6 +1464,7 @@ def get_processing_strategy(
     train_on_eos: Optional[str] = None,
     role_boundaries_override: Optional[list[dict]] = None,
     field_messages: str | list[str] | tuple[str, ...] | None = None,
+    prompt_loss_weight: float | None = 0.0,
 ):
     processing_kwargs = {
         "processor": processor,
@@ -1451,6 +1476,7 @@ def get_processing_strategy(
         "train_on_eos": train_on_eos,
         "role_boundaries_override": role_boundaries_override,
         "field_messages": field_messages,
+        "prompt_loss_weight": prompt_loss_weight,
     }
 
     if chat_template_type in [None, "tokenizer_default"]:

@@ -74,5 +74,9 @@ class MetharmePrompter(AlpacaPrompter):
 
 def load(tokenizer, cfg):
     return MetharmePromptTokenizingStrategy(
-        MetharmePrompter(), tokenizer, cfg.train_on_inputs, cfg.sequence_len
+        MetharmePrompter(),
+        tokenizer,
+        cfg.train_on_inputs,
+        cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )

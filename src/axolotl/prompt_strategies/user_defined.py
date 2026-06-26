@@ -81,6 +81,7 @@ def load(tokenizer, cfg, ds_cfg: Optional[UserDefinedDatasetConfig] = None):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
     strat.parse_instruction_fields = partial(  # type: ignore[method-assign]

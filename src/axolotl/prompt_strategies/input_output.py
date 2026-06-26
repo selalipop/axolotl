@@ -34,7 +34,7 @@ class RawInputOutputStrategy(PromptTokenizingStrategy):
             "attention_mask": [1] * len(input_ids),
         }
 
-        return tokenized_prompt
+        return self._add_prompt_loss_weights_from_labels(tokenized_prompt)
 
 
 class RawInputOutputPrompter(Prompter):
@@ -51,4 +51,5 @@ def load(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )

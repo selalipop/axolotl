@@ -146,11 +146,13 @@ class LLama2ChatTokenizingStrategy(PromptTokenizingStrategy):
                 input_ids[i] = 518
             if target[i] == 29961:
                 target[i] = 518
-        return {
-            "input_ids": input_ids,
-            "labels": target,
-            "attention_mask": attention_mask,
-        }
+        return self._add_prompt_loss_weights_from_labels(
+            {
+                "input_ids": input_ids,
+                "labels": target,
+                "attention_mask": attention_mask,
+            }
+        )
 
 
 class Llama2ChatPrompter:
@@ -205,4 +207,5 @@ def load(tokenizer, cfg) -> LLama2ChatTokenizingStrategy:
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )

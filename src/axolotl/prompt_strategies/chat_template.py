@@ -23,6 +23,17 @@ if TYPE_CHECKING:
 # Configure the logger
 LOG = get_logger(__name__)
 LOG.setLevel("INFO")
+BREAKPOINT_MARKER = "<<--breakpoint-->>"
+
+
+def _strip_breakpoint_markers(value):
+    if isinstance(value, str):
+        return value.replace(BREAKPOINT_MARKER, "")
+    if isinstance(value, list):
+        return [_strip_breakpoint_markers(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_breakpoint_markers(val) for key, val in value.items()}
+    return value
 
 
 def _extract_input_ids(result):
@@ -291,8 +302,11 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
         train_on_eot: str | None = None,
         eot_tokens: list[str] | None = None,
         split_thinking: bool | None = False,
+        prompt_loss_weight: float | None = 0.0,
     ):
-        super().__init__(prompter, tokenizer, train_on_inputs, sequence_len)
+        super().__init__(
+            prompter, tokenizer, train_on_inputs, sequence_len, prompt_loss_weight
+        )
         self.prompter: ChatTemplatePrompter = prompter
 
         self.roles_to_train = []
@@ -474,6 +488,11 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                 labels = input_ids
 
             tokenized_prompt["labels"] = labels
+            if self.prompt_loss_weight > 0.0 and not self.train_on_inputs:
+                tokenized_prompt["loss_weights"] = [
+                    self.prompt_loss_weight if label == IGNORE_TOKEN_ID else 1.0
+                    for label in labels
+                ]
 
             return tokenized_prompt
 
@@ -484,6 +503,11 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
             result = {"input_ids": result}
         input_ids = result["input_ids"]
         labels = [IGNORE_TOKEN_ID] * len(input_ids)
+        loss_weights = (
+            [0.0] * len(input_ids)
+            if self.prompt_loss_weight > 0.0 and not self.train_on_inputs
+            else None
+        )
 
         last_eos_idx = -1
         last_eot_idx = -1
@@ -508,11 +532,20 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
 
             LOG.debug(f"Should train: {should_train}")
 
+            prompt_weight_turn = (
+                loss_weights is not None
+                and not should_train
+                and train_turn is None
+                and train_detail is None
+                and reasoning_train_detail is None
+                and role not in self.roles_to_train
+            )
+
             # turn not trainable, skip having to find the turn indices
             # unless last turn and train_on_eos/train_on_eot is all
             if not should_train and (
                 self.train_on_eos != "all" and self.train_on_eot != "all"
-            ):
+            ) and not prompt_weight_turn:
                 if index == len(turns) - 1:
                     LOG.warning(
                         "Last turn is not trainable, skipping having to find the turn indices. "
@@ -540,6 +573,16 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
 
             LOG.debug(f"Turn indices: start={turn_start_idx}, end={turn_end_idx}")
 
+            if (
+                prompt_weight_turn
+                and turn_start_idx != -1
+                and turn_end_idx != -1
+                and loss_weights is not None
+            ):
+                loss_weights[turn_start_idx:turn_end_idx] = [
+                    self.prompt_loss_weight
+                ] * (turn_end_idx - turn_start_idx)
+
             if should_train and turn_start_idx != -1 and turn_end_idx != -1:
                 if train_detail:
                     if not isinstance(content, str):
@@ -556,6 +599,8 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                             input_ids
                         ):
                             labels[turn_start_idx + i] = input_ids[turn_start_idx + i]
+                            if loss_weights is not None:
+                                loss_weights[turn_start_idx + i] = 1.0
                             LOG.debug(
                                 f"Label set at index {turn_start_idx + i}: {input_ids[turn_start_idx + i]}"
                             )
@@ -564,6 +609,10 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                     labels[turn_start_idx:turn_end_idx] = input_ids[
                         turn_start_idx:turn_end_idx
                     ]
+                    if loss_weights is not None:
+                        loss_weights[turn_start_idx:turn_end_idx] = [1.0] * (
+                            turn_end_idx - turn_start_idx
+                        )
                     LOG.debug(
                         f"Set labels for training from {turn_start_idx} to {turn_end_idx}"
                     )
@@ -593,6 +642,8 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                             input_ids
                         ):
                             labels[reasoning_start + i] = input_ids[reasoning_start + i]
+                            if loss_weights is not None:
+                                loss_weights[reasoning_start + i] = 1.0
 
                 LOG.debug(f"Labels after processing turn {index}: {labels}")
 
@@ -617,6 +668,8 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                         train_option == "turn" and should_train
                     ):
                         labels[token_idx] = input_ids[token_idx]
+                        if loss_weights is not None:
+                            loss_weights[token_idx] = 1.0
                         LOG.debug(
                             f"{token_type} token set for training at index {token_idx}"
                         )
@@ -632,6 +685,8 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
         ]:
             if train_option == "last" and last_idx != -1:
                 labels[last_idx] = input_ids[last_idx]
+                if loss_weights is not None:
+                    loss_weights[last_idx] = 1.0
                 LOG.debug(
                     f"Last {token_type} token set for training at index {last_idx}"
                 )
@@ -641,6 +696,14 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
         # ``result`` already carries any processor outputs (pixel_values, image
         # grid info, etc.); just set the fields we computed locally.
         result["labels"] = labels
+        if loss_weights is not None:
+            loss_weights = [
+                self.prompt_loss_weight
+                if label == IGNORE_TOKEN_ID and weight == 0.0
+                else weight
+                for label, weight in zip(labels, loss_weights, strict=True)
+            ]
+            result["loss_weights"] = loss_weights
         result.setdefault("attention_mask", [1] * len(input_ids))
         return result
 
@@ -879,7 +942,12 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
             possible_sys_turn["role"] != "system"
             and self.prompter.field_system in prompt
         ):
-            turn = {"role": "system", "content": prompt[self.prompter.field_system]}
+            turn = {
+                "role": "system",
+                "content": _strip_breakpoint_markers(
+                    prompt[self.prompter.field_system]
+                ),
+            }
             turns.append(turn)
 
         for message in messages:
@@ -1011,7 +1079,7 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                             )
                             raise
 
-        return transformed_message
+        return _strip_breakpoint_markers(transformed_message)
 
     def _get_images(self, prompt):
         return prompt.get(self.images, None)
@@ -1100,11 +1168,17 @@ class MistralStrategy(ChatTemplateStrategy):
         train_on_eot: str | None = None,
         eot_tokens: list[str] | None = None,
         split_thinking: bool | None = False,
+        prompt_loss_weight: float | None = 0.0,
     ):
         # Call the parent's parent __init__ (PromptTokenizingStrategy) to skip ChatTemplateStrategy's validation
 
         PromptTokenizingStrategy.__init__(
-            self, prompter, tokenizer, train_on_inputs, sequence_len
+            self,
+            prompter,
+            tokenizer,
+            train_on_inputs,
+            sequence_len,
+            prompt_loss_weight,
         )
         self.prompter: ChatTemplatePrompter = prompter
 
@@ -1182,6 +1256,7 @@ class StrategyLoader:
             "train_on_eot": ds_cfg.get("train_on_eot", None),
             "eot_tokens": cfg.get("eot_tokens", None),  # loads from cfg, not ds_cfg
             "split_thinking": ds_cfg.get("split_thinking", False),
+            "prompt_loss_weight": cfg.prompt_loss_weight,
         }
 
     def __call__(

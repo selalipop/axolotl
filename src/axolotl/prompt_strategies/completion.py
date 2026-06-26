@@ -83,6 +83,7 @@ def load(tokenizer, cfg, ds_cfg: Optional[Dict[str, Any]] = None):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
         max_length=cfg.sequence_len * 64,
     )
     if ds_cfg and "field" in ds_cfg:

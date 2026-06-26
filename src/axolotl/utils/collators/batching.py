@@ -8,6 +8,21 @@ from transformers import PreTrainedTokenizerBase
 from transformers.utils import PaddingStrategy
 
 
+def _packing_array(item: dict, feature: str) -> np.ndarray:
+    array = np.array(item[feature])
+    if feature != "loss_weights":
+        return array
+
+    array = array.astype(np.float32, copy=True)
+    if array.size:
+        array[0] = 0.0
+    if "position_ids" in item:
+        position_ids = np.array(item["position_ids"])
+        if position_ids.shape == array.shape:
+            array[position_ids == 0] = 0.0
+    return array
+
+
 @dataclass
 class DataCollatorForSeq2Seq:
     """
@@ -61,6 +76,7 @@ class DataCollatorForSeq2Seq:
         for feature_name, pad_token_id in [
             ("labels", self.label_pad_token_id),
             ("position_ids", self.position_pad_token_id),
+            ("loss_weights", 0.0),
         ]:
             feat = (
                 [feature[feature_name] for feature in features]
@@ -92,6 +108,15 @@ class DataCollatorForSeq2Seq:
                             if padding_side == "right"
                             else remainder + feature[feature_name]
                         )
+                    elif feature_name == "loss_weights":
+                        if padding_side == "right":
+                            feature[feature_name] = np.concatenate(
+                                [feature[feature_name], remainder]
+                            ).astype(np.float32)
+                        else:
+                            feature[feature_name] = np.concatenate(
+                                [remainder, feature[feature_name]]
+                            ).astype(np.float32)
                     elif padding_side == "right":
                         feature[feature_name] = np.concatenate(
                             [feature[feature_name], remainder]
@@ -148,7 +173,9 @@ class BatchSamplerDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
                     out_features[i][feature] = np.concatenate(arrays)
                 else:
                     arrays = [
-                        np.array(item[feature]) for item in features_ if feature in item
+                        _packing_array(item, feature)
+                        for item in features_
+                        if feature in item
                     ]
                     out_features[i][feature] = np.concatenate(arrays)
 
@@ -189,7 +216,9 @@ class V2BatchSamplerDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
                     out_features[i][feature] = position_ids
                 else:
                     arrays = [
-                        np.array(item[feature]) for item in features_ if feature in item
+                        _packing_array(item, feature)
+                        for item in features_
+                        if feature in item
                     ]
                     out_features[i][feature] = np.concatenate(arrays)
 

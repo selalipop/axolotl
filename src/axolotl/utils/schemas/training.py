@@ -61,6 +61,14 @@ class HyperparametersConfig(BaseModel):
             "description": "Whether to mask out or include the human's prompt from the training labels"
         },
     )
+    prompt_loss_weight: float | None = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        json_schema_extra={
+            "description": "When train_on_inputs is false, apply this fractional loss weight to prompt tokens instead of fully masking them"
+        },
+    )
     group_by_length: bool | None = Field(
         default=None,
         json_schema_extra={

@@ -13,6 +13,7 @@ def load_404(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
 
@@ -22,6 +23,7 @@ def load(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
 
@@ -31,6 +33,7 @@ def load_v2(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
 

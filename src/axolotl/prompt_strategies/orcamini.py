@@ -44,4 +44,5 @@ def load(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )

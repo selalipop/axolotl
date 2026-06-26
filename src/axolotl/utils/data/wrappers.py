@@ -242,6 +242,7 @@ def _handle_alpaca_dataset(
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
     dataset_wrapper = wrap_dataset_for_tokenized_prompt(
         dataset_strategy,
@@ -265,6 +266,7 @@ def _handle_explainchoice_dataset(
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
     dataset_wrapper = wrap_dataset_for_tokenized_prompt(
         dataset_strategy,
@@ -288,6 +290,7 @@ def _handle_concisechoice_dataset(
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
     dataset_wrapper = wrap_dataset_for_tokenized_prompt(
         dataset_strategy,
@@ -311,6 +314,7 @@ def _handle_summarizetldr_dataset(
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
     dataset_wrapper = wrap_dataset_for_tokenized_prompt(
         dataset_strategy,
@@ -334,6 +338,7 @@ def _handle_jeopardy_dataset(
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
     dataset_wrapper = wrap_dataset_for_tokenized_prompt(
         dataset_strategy,
@@ -357,6 +362,7 @@ def _handle_oasst_dataset(
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
     dataset_wrapper = wrap_dataset_for_tokenized_prompt(
         dataset_strategy,
@@ -380,6 +386,7 @@ def _handle_gpteacher_dataset(
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
     dataset_wrapper = wrap_dataset_for_tokenized_prompt(
         dataset_strategy,
@@ -403,6 +410,7 @@ def _handle_reflection_dataset(
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
     dataset_wrapper = wrap_dataset_for_tokenized_prompt(
         dataset_strategy,

@@ -49,7 +49,7 @@ class InstructionWSystemPromptTokenizingStrategy(PromptTokenizingStrategy):
         tokenized_prompt["attention_mask"] += tokenized_res_prompt["attention_mask"]
         tokenized_prompt["labels"] += tokenized_res_prompt["input_ids"]
 
-        return tokenized_prompt
+        return self._add_prompt_loss_weights_from_labels(tokenized_prompt)
 
 
 class SystemDataPrompter(AlpacaPrompter):
@@ -132,6 +132,7 @@ def load_instruct(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
 
@@ -141,6 +142,7 @@ def load_chat(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
 
@@ -150,6 +152,7 @@ def load_open_orca(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )
 
 
@@ -159,4 +162,5 @@ def load_open_orca_chatml(tokenizer, cfg):
         tokenizer,
         cfg.train_on_inputs,
         cfg.sequence_len,
+        cfg.prompt_loss_weight,
     )

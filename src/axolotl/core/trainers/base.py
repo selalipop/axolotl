@@ -93,6 +93,10 @@ class AxolotlTrainer(
     @axolotl_cfg.setter
     def axolotl_cfg(self, cfg):
         self._axolotl_cfg = cfg
+        if (
+            getattr(cfg, "prompt_loss_weight", 0.0) or 0.0
+        ) > 0.0 and hasattr(self, "model_accepts_loss_kwargs"):
+            self.model_accepts_loss_kwargs = True
 
     def __init__(
         self,
@@ -137,6 +141,160 @@ class AxolotlTrainer(
         )
         if self.args.orpo_alpha:
             self.loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+
+    def _set_signature_columns_if_needed(self):
+        super()._set_signature_columns_if_needed()
+        if self._signature_columns and "loss_weights" not in self._signature_columns:
+            self._signature_columns.append("loss_weights")
+
+    def _get_num_items_in_batch(
+        self, batch_samples: list, device: torch.device
+    ) -> torch.Tensor | int | None:
+        if len(batch_samples) == 0 or "loss_weights" not in batch_samples[0]:
+            return super()._get_num_items_in_batch(batch_samples, device)
+
+        try:
+            weights_for_count = []
+            for batch in batch_samples:
+                if "shift_loss_weights" in batch:
+                    weights = batch["shift_loss_weights"]
+                else:
+                    weights = AxolotlTrainer._clear_packed_boundary_loss_weights(
+                        batch["loss_weights"], batch.get("position_ids")
+                    )
+                    if getattr(self, "_loss_shifts_labels", True):
+                        weights = weights[..., 1:]
+                weights_for_count.append(weights)
+            num_items_in_batch = sum(weights.sum() for weights in weights_for_count)
+        except (TypeError, AttributeError):
+            return super()._get_num_items_in_batch(batch_samples, device)
+
+        if self.args.average_tokens_across_devices:
+            if self.args.world_size > 1:
+                num_items_in_batch = self.accelerator.gather(
+                    num_items_in_batch.to(device)
+                ).sum()
+        elif self.args.n_gpu > 1:
+            num_items_in_batch = num_items_in_batch / self.args.n_gpu
+
+        if torch.is_tensor(num_items_in_batch):
+            num_items_in_batch = num_items_in_batch.to(device)
+
+            if self.args.n_gpu > 1 and num_items_in_batch.dim() == 0:
+                num_items_in_batch = num_items_in_batch.unsqueeze(0).expand(
+                    self.args.n_gpu, -1
+                )
+            if pc := getattr(self.accelerator, "parallelism_config", None):
+                num_items_in_batch = num_items_in_batch / pc.non_data_parallel_size
+
+        return num_items_in_batch
+
+    @staticmethod
+    def _make_prompt_weighted_labels(
+        input_ids: torch.Tensor,
+        labels: torch.Tensor,
+        loss_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        effective_labels = labels.clone()
+        active_loss = loss_weights.to(device=labels.device) > 0
+        effective_labels[active_loss] = input_ids.to(labels.device)[active_loss]
+        effective_labels[~active_loss] = -100
+        return effective_labels
+
+    @staticmethod
+    def _clear_packed_boundary_loss_weights(
+        loss_weights: torch.Tensor,
+        position_ids: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if position_ids is None:
+            return loss_weights
+
+        boundary_mask = position_ids.to(device=loss_weights.device) == 0
+        while boundary_mask.ndim > loss_weights.ndim:
+            boundary_mask = boundary_mask[0]
+
+        if (
+            boundary_mask.ndim == 1
+            and loss_weights.ndim == 2
+            and boundary_mask.shape[0] == loss_weights.shape[-1]
+        ):
+            boundary_mask = boundary_mask.unsqueeze(0).expand_as(loss_weights)
+        elif boundary_mask.shape != loss_weights.shape:
+            try:
+                boundary_mask = torch.broadcast_to(boundary_mask, loss_weights.shape)
+            except RuntimeError:
+                return loss_weights
+
+        if not boundary_mask.any():
+            return loss_weights
+
+        loss_weights = loss_weights.clone()
+        loss_weights[boundary_mask] = 0.0
+        return loss_weights
+
+    @staticmethod
+    def _get_loss_from_outputs(outputs):
+        if isinstance(outputs, dict):
+            return outputs["loss"]
+        if hasattr(outputs, "loss"):
+            return outputs.loss
+        return outputs[0]
+
+    def _compute_prompt_weighted_sft_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
+        inputs = dict(inputs)
+        loss_weights = inputs.pop("loss_weights")
+        labels = inputs.get("labels")
+        input_ids = inputs.get("input_ids")
+        if labels is None or input_ids is None:
+            raise KeyError(
+                "prompt_loss_weight requires input_ids, labels, and loss_weights "
+                "in the batch"
+            )
+
+        loss_weights = self._clear_packed_boundary_loss_weights(
+            loss_weights, inputs.get("position_ids")
+        )
+        effective_labels = self._make_prompt_weighted_labels(
+            input_ids, labels, loss_weights
+        )
+        shift_weights = loss_weights[..., 1:].to(
+            device=effective_labels.device, dtype=torch.float32
+        )
+        if num_items_in_batch is None:
+            denom = shift_weights.sum()
+        else:
+            denom = torch.as_tensor(
+                num_items_in_batch, device=effective_labels.device, dtype=torch.float32
+            )
+        denom = denom.clamp_min(1.0) if torch.is_tensor(denom) else max(denom, 1.0)
+
+        if getattr(self.axolotl_cfg, "cut_cross_entropy", False):
+            inputs["labels"] = effective_labels
+            inputs["loss_weights"] = loss_weights
+            if num_items_in_batch is not None:
+                inputs["num_items_in_batch"] = num_items_in_batch
+            outputs = model(**inputs)
+            loss = self._get_loss_from_outputs(outputs)
+            return (loss, outputs) if return_outputs else loss
+
+        inputs.pop("labels", None)
+        inputs.pop("num_items_in_batch", None)
+        outputs = model(**inputs)
+        logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = effective_labels[..., 1:].contiguous()
+        shift_weights = shift_weights.to(
+            device=shift_logits.device, dtype=shift_logits.dtype
+        )
+        loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+        token_loss = loss_fct(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1).to(shift_logits.device),
+        ).view(shift_labels.shape)
+        loss = (token_loss * shift_weights).sum() / denom.to(shift_logits.device)
+        return (loss, outputs) if return_outputs else loss
 
     def _create_multipack_sampler(
         self, base_sampler: Sampler, dataset: Dataset
@@ -434,6 +592,14 @@ class AxolotlTrainer(
             and "position_ids" in inputs
         ):
             del inputs["attention_mask"]
+
+        if "loss_weights" in inputs:
+            return self._compute_prompt_weighted_sft_loss(
+                model,
+                inputs,
+                return_outputs=return_outputs,
+                num_items_in_batch=num_items_in_batch,
+            )
 
         if self.args.orpo_alpha:
             return self.orpo_compute_loss(

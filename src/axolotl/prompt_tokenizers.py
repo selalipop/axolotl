@@ -53,10 +53,12 @@ class PromptTokenizingStrategy(abc.ABC):
         tokenizer,
         train_on_inputs: bool = False,
         sequence_len: int = 2048,
+        prompt_loss_weight: float | None = 0.0,
     ):
         self.prompter = prompter
         self.tokenizer: PreTrainedTokenizer = tokenizer
         self.train_on_inputs = train_on_inputs
+        self.prompt_loss_weight = float(prompt_loss_weight or 0.0)
         # sequence_len and max_length can be different for CompletionPromptTokenizingStrategy.
         # TODO: Document how they are different.
         self.sequence_len = sequence_len
@@ -104,6 +106,20 @@ class PromptTokenizingStrategy(abc.ABC):
         result["labels"] = result["input_ids"].copy()
         return result
 
+    def _add_prompt_loss_weights_from_labels(
+        self, tokenized_prompt: dict
+    ) -> dict:
+        if self.train_on_inputs or self.prompt_loss_weight <= 0.0:
+            return tokenized_prompt
+        if "labels" not in tokenized_prompt:
+            return tokenized_prompt
+
+        tokenized_prompt["loss_weights"] = [
+            self.prompt_loss_weight if label == IGNORE_INDEX else 1.0
+            for label in tokenized_prompt["labels"]
+        ]
+        return tokenized_prompt
+
 
 class InstructionPromptTokenizingStrategy(PromptTokenizingStrategy):
     """
@@ -141,7 +157,7 @@ class InstructionPromptTokenizingStrategy(PromptTokenizingStrategy):
         tokenized_prompt["attention_mask"] += tokenized_res_prompt["attention_mask"]
         tokenized_prompt["labels"] += tokenized_res_prompt["input_ids"]
 
-        return tokenized_prompt
+        return self._add_prompt_loss_weights_from_labels(tokenized_prompt)
 
     def _build_full_prompt(
         self,
@@ -287,7 +303,7 @@ class ReflectionPromptTokenizingStrategy(PromptTokenizingStrategy):
                 IGNORE_INDEX
             ] * user_prompt_len + tokenized_full_prompt["labels"][user_prompt_len:]
 
-        return tokenized_full_prompt
+        return self._add_prompt_loss_weights_from_labels(tokenized_full_prompt)
 
     def _build_full_prompt(self, instruction, input, output, reflection, corrected):
         return next(
