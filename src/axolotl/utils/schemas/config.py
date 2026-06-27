@@ -494,6 +494,10 @@ class AxolotlInputConfig(
         default=None,
         json_schema_extra={"description": "Advanced DDP Arguments - broadcast buffers"},
     )
+    ddp_static_graph: bool | None = Field(
+        default=None,
+        json_schema_extra={"description": "Advanced DDP Arguments - static graph"},
+    )
     ddp_find_unused_parameters: bool | None = None
 
     do_causal_lm_eval: bool | None = Field(

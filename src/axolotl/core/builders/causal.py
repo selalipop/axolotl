@@ -232,6 +232,8 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             training_arguments_kwargs["ddp_broadcast_buffers"] = (
                 self.cfg.ddp_broadcast_buffers
             )
+        if self.cfg.ddp_static_graph is not None:
+            training_arguments_kwargs["ddp_static_graph"] = self.cfg.ddp_static_graph
 
         # these are all the "standard" kwargs that are def used
         training_arguments_kwargs["max_seq_length"] = self.cfg.sequence_len

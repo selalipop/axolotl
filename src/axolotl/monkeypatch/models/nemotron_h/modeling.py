@@ -268,7 +268,10 @@ def patch_nemotron_h_modeling_packing():
                 )
         return self.torch_forward(hidden_states, cache_params, attention_mask)
 
-    NemotronHMamba2Mixer.forward = patched_mixer_forward
+    # Keep Mamba2's fused CUDA/Triton kernels opaque to Dynamo/Inductor. Whole-model
+    # compile can otherwise inline the SSD fallback math and materialize TB-scale
+    # chunk-pair intermediates in backward at long context.
+    NemotronHMamba2Mixer.forward = torch.compiler.disable(patched_mixer_forward)
 
     # Patch 3: NemotronHBlock.forward — compute seq_idx from position_ids and
     # pass it to the Mamba2 mixer. Skipped during decode (has_previous_state).

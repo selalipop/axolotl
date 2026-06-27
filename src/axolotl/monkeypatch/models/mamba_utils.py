@@ -200,12 +200,53 @@ def ensure_mamba_kernels_loaded(target_module):
         return
 
     try:
+        from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+
+        target_module.causal_conv1d_update = causal_conv1d_update
+        target_module.causal_conv1d_fn = causal_conv1d_fn
+    except ImportError:
+        pass
+
+    try:
+        from mamba_ssm.ops.triton.selective_state_update import (
+            selective_state_update,
+        )
+        from mamba_ssm.ops.triton.ssd_combined import (
+            mamba_chunk_scan_combined,
+            mamba_split_conv1d_scan_combined,
+        )
+
+        target_module.selective_state_update = selective_state_update
+        target_module.mamba_chunk_scan_combined = mamba_chunk_scan_combined
+        target_module.mamba_split_conv1d_scan_combined = (
+            mamba_split_conv1d_scan_combined
+        )
+    except ImportError:
+        pass
+
+    if all(
+        (
+            getattr(target_module, "selective_state_update", None),
+            getattr(target_module, "mamba_chunk_scan_combined", None),
+            getattr(target_module, "mamba_split_conv1d_scan_combined", None),
+            getattr(target_module, "causal_conv1d_fn", None),
+            getattr(target_module, "causal_conv1d_update", None),
+        )
+    ):
+        target_module.is_fast_path_available = True
+        return
+
+    try:
         from transformers.integrations.hub_kernels import lazy_load_kernel
         from transformers.utils.import_utils import resolve_internal_import
     except ImportError:
+        target_module.is_fast_path_available = False
         return
 
-    causal_conv1d = lazy_load_kernel("causal-conv1d")
+    if getattr(target_module, "causal_conv1d_fn", None) is None:
+        causal_conv1d = lazy_load_kernel("causal-conv1d")
+    else:
+        causal_conv1d = None
     if causal_conv1d is not None:
         target_module.causal_conv1d_update = getattr(
             causal_conv1d, "causal_conv1d_update", None
@@ -214,7 +255,10 @@ def ensure_mamba_kernels_loaded(target_module):
             causal_conv1d, "causal_conv1d_fn", None
         )
 
-    mamba_ssm = lazy_load_kernel("mamba-ssm")
+    if getattr(target_module, "mamba_chunk_scan_combined", None) is None:
+        mamba_ssm = lazy_load_kernel("mamba-ssm")
+    else:
+        mamba_ssm = None
     if mamba_ssm is not None:
         target_module.selective_state_update = resolve_internal_import(
             mamba_ssm,

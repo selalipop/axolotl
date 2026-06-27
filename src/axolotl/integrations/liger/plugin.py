@@ -346,6 +346,73 @@ class LigerPlugin(BasePlugin):
                 f"rms_norm={cfg.liger_rms_norm}, glu={cfg.liger_glu_activation}, "
                 f"rope=False (incompatible), layer_norm={cfg.liger_layer_norm}"
             )
+        elif cfg.model_config_type == "nemotron_h":
+            from transformers.models.nemotron_h import modeling_nemotron_h
+
+            if cfg.liger_rms_norm:
+
+                class _LigerNemotronHRMSNorm(LigerRMSNorm):
+                    def __init__(self, hidden_size, eps=1e-6):
+                        super().__init__(
+                            hidden_size,
+                            eps=eps,
+                            offset=0.0,
+                            casting_mode="llama",
+                            init_fn="ones",
+                            in_place=False,
+                            elementwise_affine=True,
+                        )
+
+                modeling_nemotron_h.NemotronHRMSNorm = _LigerNemotronHRMSNorm
+            if cfg.liger_rope:
+                LOG.warning(
+                    "liger_rope is not directly applied for nemotron_h; "
+                    "Transformers kernelization handles its rotary function when "
+                    "use_kernels is enabled."
+                )
+            if cfg.liger_glu_activation:
+                LOG.warning(
+                    "liger_glu_activation is not supported for nemotron_h because "
+                    "Nemotron-H uses relu2 up/down MLPs, not SwiGLU/GeGLU."
+                )
+            if cfg.liger_layer_norm:
+                LOG.warning(
+                    "liger_layer_norm is not supported for nemotron_h because "
+                    "Nemotron-H uses RMSNorm."
+                )
+            if getattr(cfg, "liger_rms_norm_gated", False):
+                LOG.warning(
+                    "liger_rms_norm_gated is not supported for nemotron_h; "
+                    "its Mamba gated norm uses the Transformers/Zamba2 implementation."
+                )
+            if cfg.liger_cross_entropy:
+                LOG.warning(
+                    "liger_cross_entropy is not directly supported for nemotron_h; "
+                    "leaving the model loss path unchanged."
+                )
+            if cfg.liger_fused_linear_cross_entropy:
+                try:
+                    from .models.base import patch_lce_forward
+
+                    patch_lce_forward(cfg.model_config_type)
+                    LOG.warning_once(
+                        "Applied ONLY liger_fused_linear_cross_entropy generic "
+                        f"patches for model type: {cfg.model_config_type}"
+                    )
+                    LOG.warning_once(
+                        f"Liger + {cfg.model_config_type} generic FLCE support "
+                        "is experimental and may not work as expected."
+                    )
+                except RuntimeError:
+                    LOG.warning(
+                        f"Unsupported model config type: {cfg.model_config_type}. "
+                        "Liger fused linear cross entropy not applied."
+                    )
+            LOG.info(
+                f"Applied Liger kernels for nemotron_h: "
+                f"rms_norm={cfg.liger_rms_norm}, rope=False, "
+                f"glu=False, layer_norm=False"
+            )
         elif cfg.liger_fused_linear_cross_entropy:
             try:
                 from .models.base import patch_lce_forward
