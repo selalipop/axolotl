@@ -141,9 +141,13 @@ class PatchManager:
             patch_evaluation_loop,
             patch_maybe_log_save_evaluate,
         )
+        from axolotl.monkeypatch.transformers.weight_converter_peft_compat import (
+            patch_weight_converter_peft_compat,
+        )
 
         patch_evaluation_loop()
         patch_maybe_log_save_evaluate()
+        patch_weight_converter_peft_compat()
 
     def apply_post_model_build_patches(self, model: PreTrainedModel):
         """Apply patches right after model build, before post-load setup."""
