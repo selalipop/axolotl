@@ -14,6 +14,7 @@ class PackingMixin(Trainer):
             self._signature_columns
             and self.args.sample_packing
             and self.args.sample_packing_drop_attention_mask
+            and not getattr(self.axolotl_cfg, "prompt_loss_weight", None)
         ):
             set_sig_columns = set(self._signature_columns)
             set_sig_columns.remove("attention_mask")

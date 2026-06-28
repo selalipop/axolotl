@@ -50,6 +50,8 @@ class DataCollatorForSeq2Seq:
     pad_to_multiple_of: int | None = None
     label_pad_token_id: int = -100
     position_pad_token_id: int = 0
+    loss_attention_mask_pad_token_id: int = 0
+    include_loss_attention_mask: bool = False
     return_tensors: str = "pt"
 
     def __call__(self, features, return_tensors=None):
@@ -58,9 +60,14 @@ class DataCollatorForSeq2Seq:
         if return_tensors is None:
             return_tensors = self.return_tensors
 
+        if self.include_loss_attention_mask and has_attn_mask:
+            for feature in features:
+                feature.setdefault("loss_attention_mask", feature["attention_mask"])
+
         for feature_name, pad_token_id in [
             ("labels", self.label_pad_token_id),
             ("position_ids", self.position_pad_token_id),
+            ("loss_attention_mask", self.loss_attention_mask_pad_token_id),
         ]:
             feat = (
                 [feature[feature_name] for feature in features]

@@ -328,6 +328,7 @@ class AxolotlTrainer(
             and "attention_mask" in dataset.column_names
             and self.args.sample_packing
             and self.args.sample_packing_drop_attention_mask
+            and not getattr(self.axolotl_cfg, "prompt_loss_weight", None)
         ):
             dataset = dataset.remove_columns(["attention_mask"])
 

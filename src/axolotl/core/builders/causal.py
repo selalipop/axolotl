@@ -601,6 +601,17 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             else:
                 collator = DataCollatorForSeq2Seq
 
+        if (
+            getattr(self.cfg, "prompt_loss_weight", None)
+            and collator
+            in (
+                DataCollatorForSeq2Seq,
+                BatchSamplerDataCollatorForSeq2Seq,
+                V2BatchSamplerDataCollatorForSeq2Seq,
+            )
+        ):
+            kwargs["include_loss_attention_mask"] = True
+
         kwargs["return_tensors"] = "pt"
 
         return collator(
