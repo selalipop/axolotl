@@ -92,12 +92,27 @@ def patch_flash_attn_4(model_config=None):
     except ImportError:
         flash_attn_with_kvcache = None
 
+    # FA4's varlen kernel cache keys include ``(seqlen_rounded // block_size == 1)``.
+    # transformers' packed path passes ``max_seqlen`` as a 0-dim CUDA tensor
+    # (``cu_seqlens.diff().max()``, no ``.item()``), so that element is a tensor —
+    # and tensors hash by ``id()``, so the in-memory cache never hits and the attention
+    # backward kernels recompile every step (seconds of GPU-idle compile + unbounded
+    # host-RAM growth). Coerce to int so the key is value-hashable and the cache hits.
+    def _flash_attn_varlen_func(*args, max_seqlen_q=None, max_seqlen_k=None, **kwargs):
+        if torch.is_tensor(max_seqlen_q):
+            max_seqlen_q = int(max_seqlen_q)
+        if torch.is_tensor(max_seqlen_k):
+            max_seqlen_k = int(max_seqlen_k)
+        return flash_attn_varlen_func(
+            *args, max_seqlen_q=max_seqlen_q, max_seqlen_k=max_seqlen_k, **kwargs
+        )
+
     def _patched_lazy_imports(
         implementation, attention_wrapper=None, allow_all_kernels=False
     ):
         return (
             flash_attn_func,
-            flash_attn_varlen_func,
+            _flash_attn_varlen_func,
             flash_attn_with_kvcache,
             fa_utils._pad_input,
             fa_utils._unpad_input,
