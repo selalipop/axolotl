@@ -55,6 +55,18 @@ class AxolotlTrainingMixins:
             "help": "Whether to include tokens per second in the training metrics."
         },
     )
+    prompt_loss_weight: Optional[float] = field(
+        default=None,
+        metadata={
+            "help": "Loss weight for prompt (masked) tokens; completion tokens keep weight 1.0."
+        },
+    )
+    plw_use_cce: bool = field(
+        default=False,
+        metadata={
+            "help": "Apply prompt_loss_weight inside the Cut Cross Entropy fused loss."
+        },
+    )
     eval_sample_packing: Optional[bool] = field(
         default=None,
         metadata={"help": "Use sample packing for efficient evals."},

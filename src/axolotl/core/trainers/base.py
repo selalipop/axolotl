@@ -48,6 +48,12 @@ from axolotl.core.trainers.utils import (
     sanitize_kwargs_for_tagging,
     trainable_tokens_per_sec_per_gpu,
 )
+from axolotl.monkeypatch.loss.prompt_loss_weight import (
+    build_plw_tensors,
+    plw_causal_lm_loss,
+    plw_num_items,
+    set_plw_weights,
+)
 from axolotl.utils import get_not_null
 from axolotl.utils.bench import get_gpu_memory_usage
 from axolotl.utils.dict import DictDefault
@@ -128,6 +134,12 @@ class AxolotlTrainer(
                 params = inspect.signature(fwd).parameters
                 if "num_items_in_batch" not in params:
                     self.model_accepts_loss_kwargs = False
+
+        # PLW normalizes by the weighted token count across the accumulation
+        # window; the Trainer only computes num_items_in_batch when this flag
+        # is set (CCE-patched forwards otherwise get downgraded above).
+        if getattr(self.args, "prompt_loss_weight", None):
+            self.model_accepts_loss_kwargs = True
 
         self.train_data_collator = self.data_collator
         self._tkps_prev_trainable: float | None = None
@@ -435,6 +447,41 @@ class AxolotlTrainer(
         ):
             del inputs["attention_mask"]
 
+        if (
+            self.args.prompt_loss_weight
+            and "labels" in inputs
+            and "input_ids" in inputs
+        ):
+            plw_labels, plw_weights = build_plw_tensors(
+                inputs["labels"],
+                inputs["input_ids"],
+                inputs.get("position_ids"),
+                pad_token_id=getattr(self.processing_class, "pad_token_id", None),
+                prompt_loss_weight=self.args.prompt_loss_weight,
+            )
+            if self.args.plw_use_cce:
+                # The weighted loss runs inside the CCE-patched forward; hand
+                # the weights off out-of-band (forward signatures are fixed).
+                inputs["labels"] = plw_labels
+                set_plw_weights(plw_weights)
+                try:
+                    return super().compute_loss(
+                        model,
+                        inputs,
+                        return_outputs=return_outputs,
+                        num_items_in_batch=num_items_in_batch,
+                    )
+                finally:
+                    set_plw_weights(None)
+            labels = inputs.pop("labels")
+            outputs = model(**inputs)
+            logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+            loss = plw_causal_lm_loss(
+                logits, plw_labels, plw_weights, num_items_in_batch=num_items_in_batch
+            )
+            inputs["labels"] = labels
+            return (loss, outputs) if return_outputs else loss
+
         if self.args.orpo_alpha:
             return self.orpo_compute_loss(
                 model,
@@ -451,8 +498,55 @@ class AxolotlTrainer(
         )
 
     @override
-    def _prepare_context_parallel_inputs(self, model, inputs):
-        """Disable HF Trainer's CP splitting when Axolotl's ring_attn handles it."""
+    def _get_num_items_in_batch(
+        self, batch_samples: list, device: torch.device
+    ) -> torch.Tensor | int | None:
+        plw = self.args.prompt_loss_weight
+        if (
+            not plw
+            or not batch_samples
+            or any(
+                "labels" not in batch
+                or "input_ids" not in batch
+                or "shift_labels" in batch
+                for batch in batch_samples
+            )
+        ):
+            return super()._get_num_items_in_batch(batch_samples, device)
+
+        # The loss divides a weighted sum by num_items_in_batch, so the count
+        # must be the same weighted quantity (a float tensor, not a token count).
+        pad_token_id = getattr(self.processing_class, "pad_token_id", None)
+        num_items_in_batch = None
+        for batch in batch_samples:
+            _, weights = build_plw_tensors(
+                batch["labels"],
+                batch["input_ids"],
+                batch.get("position_ids"),
+                pad_token_id=pad_token_id,
+                prompt_loss_weight=plw,
+            )
+            count = plw_num_items(weights, shifts_labels=self._loss_shifts_labels)
+            num_items_in_batch = (
+                count if num_items_in_batch is None else num_items_in_batch + count
+            )
+
+        if self.args.average_tokens_across_devices and self.args.world_size > 1:
+            num_items_in_batch = self.accelerator.gather(
+                num_items_in_batch.to(device)
+            ).sum()
+        elif self.args.n_gpu > 1:
+            num_items_in_batch = num_items_in_batch / self.args.n_gpu
+
+        num_items_in_batch = num_items_in_batch.to(device)
+        if self.args.n_gpu > 1 and num_items_in_batch.dim() == 0:
+            num_items_in_batch = num_items_in_batch.unsqueeze(0).expand(
+                self.args.n_gpu, -1
+            )
+        if pc := getattr(self.accelerator, "parallelism_config", None):
+            num_items_in_batch = num_items_in_batch / pc.non_data_parallel_size
+
+        return num_items_in_batch
         from axolotl.monkeypatch.models.mamba_utils import is_cp_active
 
         if is_cp_active():

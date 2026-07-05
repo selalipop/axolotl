@@ -166,6 +166,12 @@ class SFTDataset(BaseModel):
             "description": "Roles to train on. The tokens from these roles will be considered for the loss."
         },
     )
+    train_only_last_turn: bool | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": "Only train on the last trainable turn of each conversation; all earlier turns are masked (or weighted by prompt_loss_weight when set)."
+        },
+    )
     train_on_eos: Literal["all", "turn", "last", "none"] | None = Field(
         default=None,
         json_schema_extra={

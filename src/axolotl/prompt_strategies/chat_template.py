@@ -291,6 +291,7 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
         train_on_eot: str | None = None,
         eot_tokens: list[str] | None = None,
         split_thinking: bool | None = False,
+        train_only_last_turn: bool = False,
     ):
         super().__init__(prompter, tokenizer, train_on_inputs, sequence_len)
         self.prompter: ChatTemplatePrompter = prompter
@@ -302,6 +303,7 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                 prompter.roles.get(role, role) for role in roles_to_train
             ]
 
+        self.train_only_last_turn = train_only_last_turn
         self.train_on_eos = train_on_eos
         # Backward compatibility, load from train_on_eos
         self.train_on_eot = train_on_eot if train_on_eot is not None else train_on_eos
@@ -439,6 +441,16 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
 
         return dict(res)
 
+    def _should_train_turn(self, turn: dict) -> bool:
+        train_turn = turn.get("training")
+        train_detail = turn.get("training_detail")
+        reasoning_train_detail = turn.get("reasoning_training_detail")
+        if train_turn is not None:
+            return bool(train_turn)
+        if train_detail is not None or reasoning_train_detail is not None:
+            return bool(train_detail) or bool(reasoning_train_detail)
+        return self.train_on_inputs or turn.get("role") in self.roles_to_train
+
     def _tokenize_single_prompt(self, prompt: dict) -> Dict[str, List[int]]:
         # Old simple legacy behavior that works reliably.
         if (
@@ -488,6 +500,12 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
 
         last_eos_idx = -1
         last_eot_idx = -1
+        last_trainable_index = -1
+        if self.train_only_last_turn:
+            last_trainable_index = max(
+                (i for i, t in enumerate(turns) if self._should_train_turn(t)),
+                default=-1,
+            )
         for index, turn in enumerate(turns):
             role = turn.get("role")
             content = turn.get("content")
@@ -499,13 +517,9 @@ class ChatTemplateStrategy(PromptTokenizingStrategy):
                 f"Processing turn {index}: role={role}, content={content}, train_turn={train_turn}, train_detail={train_detail}"
             )
 
-            should_train = None
-            if train_turn is not None:
-                should_train = train_turn
-            elif train_detail is not None or reasoning_train_detail is not None:
-                should_train = bool(train_detail) or bool(reasoning_train_detail)
-            else:
-                should_train = self.train_on_inputs or role in self.roles_to_train
+            should_train = self._should_train_turn(turn)
+            if self.train_only_last_turn and index != last_trainable_index:
+                should_train = False
 
             LOG.debug(f"Should train: {should_train}")
 
@@ -1101,6 +1115,7 @@ class MistralStrategy(ChatTemplateStrategy):
         train_on_eot: str | None = None,
         eot_tokens: list[str] | None = None,
         split_thinking: bool | None = False,
+        train_only_last_turn: bool = False,
     ):
         # Call the parent's parent __init__ (PromptTokenizingStrategy) to skip ChatTemplateStrategy's validation
 
@@ -1115,6 +1130,8 @@ class MistralStrategy(ChatTemplateStrategy):
             self.roles_to_train = [
                 prompter.roles.get(role, role) for role in roles_to_train
             ]
+
+        self.train_only_last_turn = train_only_last_turn
 
         self.train_on_eos = train_on_eos
         # Backward compatibility, load from train_on_eos
@@ -1183,6 +1200,7 @@ class StrategyLoader:
             "train_on_eot": ds_cfg.get("train_on_eot", None),
             "eot_tokens": cfg.get("eot_tokens", None),  # loads from cfg, not ds_cfg
             "split_thinking": ds_cfg.get("split_thinking", False),
+            "train_only_last_turn": ds_cfg.get("train_only_last_turn", False),
         }
 
     def __call__(

@@ -300,6 +300,18 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
                 self.cfg.sample_packing_eff_est
             )
 
+        if self.cfg.prompt_loss_weight:
+            # text-only training of a multimodal-family model is fine; only the
+            # processor-driven multimodal data path produces image/audio tokens
+            if self.cfg.processor_type and self.processor:
+                raise ValueError(
+                    "prompt_loss_weight is not supported for multimodal training"
+                )
+            training_arguments_kwargs["prompt_loss_weight"] = (
+                self.cfg.prompt_loss_weight
+            )
+            training_arguments_kwargs["plw_use_cce"] = bool(self.cfg.cut_cross_entropy)
+
         if self.cfg.relora and self.cfg.jagged_restart_steps:
             if self.cfg.relora_prune_ratio is not None:
                 training_arguments_kwargs["relora_prune_ratio"] = (

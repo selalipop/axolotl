@@ -102,6 +102,62 @@ class CutCrossEntropyPlugin(BasePlugin):
                 remote_model_id=cfg.base_model if cfg.trust_remote_code else None,
             )
 
+            if cfg.prompt_loss_weight:
+                self._install_plw_apply_lce()
+
+    def _install_plw_apply_lce(self) -> None:
+        """Reroute the fork's `apply_lce` through a prompt-loss-weighted version.
+
+        Model modules bind `apply_lce` by value at import, so every loaded
+        `cut_cross_entropy.transformers.*` module needs its binding replaced.
+        """
+        import dataclasses
+        import sys
+
+        from cut_cross_entropy.transformers import utils as cce_transformers_utils
+
+        from axolotl.monkeypatch.loss.prompt_loss_weight import pop_plw_weights
+
+        orig_apply_lce = cce_transformers_utils.apply_lce
+        if getattr(orig_apply_lce, "_axolotl_plw", False):
+            return
+
+        def plw_apply_lce(e, c, labels, opts, bias=None, softcap=None, **loss_kwargs):
+            weights = pop_plw_weights()
+            if weights is None or weights.shape != labels.shape:
+                return orig_apply_lce(
+                    e, c, labels, opts, bias=bias, softcap=softcap, **loss_kwargs
+                )
+            # reduction="none" keeps the fused kernel (no logit materialization).
+            # With shift=True the fork returns NLL for targets shift..S-1 only,
+            # so drop the same leading columns from the weights.
+            nll = orig_apply_lce(
+                e,
+                c,
+                labels,
+                dataclasses.replace(opts, reduction="none"),
+                bias=bias,
+                softcap=softcap,
+            )
+            weights = weights[..., labels.size(-1) - nll.size(-1) :]
+            weights = weights.to(device=nll.device, dtype=nll.dtype)
+            loss = (nll * weights).sum()
+
+            num_items_in_batch = loss_kwargs.get("num_items_in_batch", None)
+            if num_items_in_batch is None:
+                return loss / weights.sum()
+            if torch.is_tensor(num_items_in_batch):
+                num_items_in_batch = num_items_in_batch.to(loss.device)
+            return loss / num_items_in_batch
+
+        plw_apply_lce._axolotl_plw = True
+
+        for mod_name, mod in list(sys.modules.items()):
+            if mod_name.startswith("cut_cross_entropy.transformers") and hasattr(
+                mod, "apply_lce"
+            ):
+                mod.apply_lce = plw_apply_lce
+
     def patch_llama_like(
         self,
         model_type_to_patch: str,

@@ -1004,6 +1004,18 @@ class AxolotlInputConfig(
             "description": "Number of top logits for entropy approximation (default: 20)"
         },
     )
+    prompt_loss_weight: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        json_schema_extra={
+            "description": "Loss weight for prompt tokens (tokens masked by "
+            "train_on_inputs: false / roles_to_train); completion tokens keep "
+            "weight 1.0 and the loss is normalized by the weighted token count. "
+            "0.0 is standard prompt masking, 1.0 trains on the full sequence. "
+            "SFT only; works with the default loss and Cut Cross Entropy."
+        },
+    )
 
     tiled_mlp: bool | None = Field(
         default=None,

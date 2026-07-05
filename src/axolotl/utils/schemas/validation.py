@@ -1035,6 +1035,47 @@ class OptimizationValidationMixin:
 
     @model_validator(mode="before")
     @classmethod
+    def check_prompt_loss_weight(cls, data):
+        if not data.get("prompt_loss_weight"):
+            return data
+
+        incompatible = {
+            "rl": data.get("rl"),
+            "reward_model": data.get("reward_model"),
+            "process_reward_model": data.get("process_reward_model"),
+            "use_eaft": data.get("use_eaft"),
+            "chunked_cross_entropy": data.get("chunked_cross_entropy"),
+            "liger_cross_entropy": data.get("liger_cross_entropy"),
+            "liger_fused_linear_cross_entropy": data.get(
+                "liger_fused_linear_cross_entropy"
+            ),
+            "context_parallel_size": (data.get("context_parallel_size") or 1) > 1,
+            "sequence_parallel_degree": (data.get("sequence_parallel_degree") or 1) > 1,
+            "multimodal (processor_type)": data.get("processor_type")
+            or data.get("is_multimodal"),
+        }
+        enabled = [name for name, value in incompatible.items() if value]
+        if any(
+            "kd" in str(plugin).lower().split(".")
+            for plugin in data.get("plugins") or []
+        ):
+            enabled.append("KD plugin")
+        if enabled:
+            raise ValueError(
+                f"prompt_loss_weight is not supported with: {', '.join(enabled)}"
+            )
+
+        if data.get("train_on_inputs"):
+            LOG.warning(
+                "prompt_loss_weight has no effect with `train_on_inputs: true` "
+                "(no prompt tokens are masked)"
+            )
+        if data.get("pretraining_dataset"):
+            LOG.warning("prompt_loss_weight has no effect on pretraining datasets")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
     def check_fsdp_version(cls, data):
         fsdp_config = data.get("fsdp_config", {})
         if fsdp_config and str(data.get("fsdp_version")) != "2":
