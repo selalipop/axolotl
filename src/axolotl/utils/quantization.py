@@ -199,6 +199,30 @@ def patch_transformers_skip_quantized_init():
     PreTrainedModel._initialize_weights = _initialize_weights
 
 
+def exclude_torchao_params_from_ddp_sync(model):
+    """Keep torchao tensor-subclass weights out of DDP's module-state sync.
+
+    DDP's init-time broadcast coalesces module states with ``aten.cat``, which
+    torchao subclasses (``MXTensor``, ``NVFP4Tensor``) do not implement. These
+    weights are frozen and loaded identically on every rank, so they need no
+    sync; DDP skips names listed in ``_ddp_params_and_buffers_to_ignore``.
+    """
+    from torchao.utils import TorchAOBaseTensor
+
+    ignored = [
+        name
+        for name, param in model.named_parameters()
+        if isinstance(param, TorchAOBaseTensor)
+    ]
+    if not ignored:
+        return
+
+    existing = list(getattr(model, "_ddp_params_and_buffers_to_ignore", []))
+    model._ddp_params_and_buffers_to_ignore = existing + [
+        name for name in ignored if name not in existing
+    ]
+
+
 def quantize_model(
     model,
     weight_dtype: TorchAOQuantDType,
