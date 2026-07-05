@@ -8,34 +8,33 @@ on:
       - "v*"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  build-axolotl:
-    if: ${{ ! contains(github.event.commits[0].message, '[skip docker]') && github.repository_owner == 'axolotl-ai-cloud' }}
+  build-axolotl-uv:
+    if: ${{ ! contains(github.event.head_commit.message, '[skip docker]') && github.repository_owner == 'axolotl-ai-cloud' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - cuda: 124
-            cuda_version: 12.4.1
-            python_version: "3.11"
-            pytorch: 2.4.1
+          - cuda: 130
+            cuda_version: 13.0.0
+            python_version: "3.12"
+            pytorch: 2.11.0
             axolotl_extras:
-          - cuda: 124
-            cuda_version: 12.4.1
-            python_version: "3.11"
-            pytorch: 2.5.1
-            axolotl_extras: vllm
-          - cuda: 124
-            cuda_version: 12.4.1
-            python_version: "3.11"
-            pytorch: 2.6.0
-            axolotl_extras: vllm
+            platforms: "linux/amd64,linux/arm64"
+          - cuda: 130
+            cuda_version: 13.0.0
+            python_version: "3.12"
+            pytorch: 2.12.0
+            axolotl_extras:
+            platforms: "linux/amd64,linux/arm64"
             is_latest: true
-          - cuda: 126
-            cuda_version: 12.6.3
-            python_version: "3.11"
-            pytorch: 2.7.0
-            axolotl_extras: vllm
     runs-on: axolotl-gpu-runner
     steps:
       - name: Checkout
@@ -45,8 +44,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            winglian/axolotl
-            axolotlai/axolotl
+            axolotlai/axolotl-uv
           tags: |
             type=ref,event=branch
             type=pep440,pattern={{version}}
@@ -62,47 +60,49 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: ${{ matrix.platforms }}
           build-args: |
             BASE_TAG=${{ github.ref_type == 'tag' && 'main' || github.ref_name }}-base-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}
             CUDA=${{ matrix.cuda }}
             PYTORCH_VERSION=${{ matrix.pytorch }}
             AXOLOTL_ARGS=${{ matrix.axolotl_args }}
-          file: ./docker/Dockerfile
+            AXOLOTL_EXTRAS=${{ matrix.axolotl_extras}}
+          file: ./docker/Dockerfile-uv
           push: ${{ github.event_name != 'pull_request' }}
+          cache-from: type=registry,ref=axolotlai/axolotl-uv:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}
+          cache-to: type=inline
           tags: |
-            ${{ steps.metadata.outputs.tags }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
-            ${{ steps.metadata.outputs.tags }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}
-            ${{ (matrix.is_latest) && format('{0}-latest', steps.metadata.outputs.tags) || '' }}
+            axolotlai/axolotl-uv:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
+            axolotlai/axolotl-uv:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}
+            ${{ (matrix.is_latest) && format('axolotlai/axolotl-uv:{0}-latest', steps.metadata.outputs.version) || '' }}
+            ${{ (github.ref_type == 'tag' && matrix.is_latest) && format('axolotlai/axolotl-uv:{0}', steps.metadata.outputs.version) || '' }}
+            axolotlai/axolotl:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
+            axolotlai/axolotl:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}
+            ${{ (matrix.is_latest) && format('axolotlai/axolotl:{0}-latest', steps.metadata.outputs.version) || '' }}
+            ${{ (github.ref_type == 'tag' && matrix.is_latest) && format('axolotlai/axolotl:{0}', steps.metadata.outputs.version) || '' }}
           labels: ${{ steps.metadata.outputs.labels }}
 
-  build-axolotl-cloud:
-    needs: build-axolotl
-    if: ${{ ! contains(github.event.commits[0].message, '[skip docker]') && github.repository_owner == 'axolotl-ai-cloud' }}
+  build-axolotl-cloud-uv:
+    needs: build-axolotl-uv
+    if: ${{ ! contains(github.event.head_commit.message, '[skip docker]') && github.repository_owner == 'axolotl-ai-cloud' }}
     # this job needs to be run on self-hosted GPU runners...
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - cuda: 124
-            cuda_version: 12.4.1
-            python_version: "3.11"
-            pytorch: 2.4.1
+          - cuda: 130
+            cuda_version: 13.0.0
+            python_version: "3.12"
+            pytorch: 2.11.0
             axolotl_extras:
-          - cuda: 124
-            cuda_version: 12.4.1
-            python_version: "3.11"
-            pytorch: 2.5.1
+            platforms: "linux/amd64,linux/arm64"
+          - cuda: 130
+            cuda_version: 13.0.0
+            python_version: "3.12"
+            pytorch: 2.12.0
             axolotl_extras:
-          - cuda: 124
-            cuda_version: 12.4.1
-            python_version: "3.11"
-            pytorch: 2.6.0
-            axolotl_extras:
+            platforms: "linux/amd64,linux/arm64"
             is_latest: true
-          - cuda: 126
-            cuda_version: 12.6.3
-            python_version: "3.11"
-            pytorch: 2.7.0
-            axolotl_extras:
     runs-on: axolotl-gpu-runner
     steps:
       - name: Checkout
@@ -112,8 +112,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            winglian/axolotl-cloud
-            axolotlai/axolotl-cloud
+            axolotlai/axolotl-cloud-uv
           tags: |
             type=ref,event=branch
             type=pep440,pattern={{version}}
@@ -128,28 +127,44 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: ${{ matrix.platforms }}
           build-args: |
             BASE_TAG=${{ github.ref_type == 'tag' && 'main' || github.ref_name }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
             CUDA=${{ matrix.cuda }}
-          file: ./docker/Dockerfile-cloud
+          file: ./docker/Dockerfile-cloud-uv
           push: ${{ github.event_name != 'pull_request' }}
+          cache-from: type=registry,ref=axolotlai/axolotl-cloud-uv:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}
+          cache-to: type=inline
           tags: |
-             ${{ steps.metadata.outputs.tags }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
-             ${{ (matrix.is_latest) && format('{0}-latest', steps.metadata.outputs.tags) || '' }}
+             axolotlai/axolotl-cloud-uv:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
+             ${{ (matrix.is_latest) && format('axolotlai/axolotl-cloud-uv:{0}-latest', steps.metadata.outputs.version) || '' }}
+             ${{ (github.ref_type == 'tag' && matrix.is_latest) && format('axolotlai/axolotl-cloud-uv:{0}', steps.metadata.outputs.version) || '' }}
+             axolotlai/axolotl-cloud:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
+             ${{ (matrix.is_latest) && format('axolotlai/axolotl-cloud:{0}-latest', steps.metadata.outputs.version) || '' }}
+             ${{ (github.ref_type == 'tag' && matrix.is_latest) && format('axolotlai/axolotl-cloud:{0}', steps.metadata.outputs.version) || '' }}
           labels: ${{ steps.metadata.outputs.labels }}
 
-  build-axolotl-cloud-no-tmux:
-    needs: build-axolotl
-    if: ${{ ! contains(github.event.commits[0].message, '[skip docker]') && github.repository_owner == 'axolotl-ai-cloud' }}
+  build-axolotl-cloud-no-tmux-uv:
+    needs: build-axolotl-uv
+    if: ${{ ! contains(github.event.head_commit.message, '[skip docker]') && github.repository_owner == 'axolotl-ai-cloud' }}
     # this job needs to be run on self-hosted GPU runners...
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - cuda: 124
-            cuda_version: 12.4.1
-            python_version: "3.11"
-            pytorch: 2.6.0
+          - cuda: 130
+            cuda_version: 13.0.0
+            python_version: "3.12"
+            pytorch: 2.11.0
             axolotl_extras:
+            platforms: "linux/amd64,linux/arm64"
+          - cuda: 130
+            cuda_version: 13.0.0
+            python_version: "3.12"
+            pytorch: 2.12.0
+            axolotl_extras:
+            platforms: "linux/amd64,linux/arm64"
+            is_latest: true
     runs-on: axolotl-gpu-runner
     steps:
       - name: Checkout
@@ -159,7 +174,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            winglian/axolotl-cloud-term
             axolotlai/axolotl-cloud-term
           tags: |
             type=ref,event=branch
@@ -175,12 +189,16 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           build-args: |
             BASE_TAG=${{ github.ref_type == 'tag' && 'main' || github.ref_name }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
             CUDA=${{ matrix.cuda }}
-          file: ./docker/Dockerfile-cloud-no-tmux
+          file: ./docker/Dockerfile-cloud-no-tmux-uv
           push: ${{ github.event_name != 'pull_request' }}
+          cache-from: type=registry,ref=axolotlai/axolotl-cloud-term:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}
+          cache-to: type=inline
           tags: |
-             ${{ steps.metadata.outputs.tags }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
-             ${{ (matrix.is_latest) && format('{0}-latest', steps.metadata.outputs.tags) || '' }}
+             axolotlai/axolotl-cloud-term:${{ steps.metadata.outputs.version }}-py${{ matrix.python_version }}-cu${{ matrix.cuda }}-${{ matrix.pytorch }}${{ matrix.axolotl_extras != '' && '-' || '' }}${{ matrix.axolotl_extras }}
+             ${{ (matrix.is_latest) && format('axolotlai/axolotl-cloud-term:{0}-latest', steps.metadata.outputs.version) || '' }}
+             ${{ (github.ref_type == 'tag' && matrix.is_latest) && format('axolotlai/axolotl-cloud-term:{0}', steps.metadata.outputs.version) || '' }}
           labels: ${{ steps.metadata.outputs.labels }}
