@@ -22,6 +22,14 @@ logger = get_logger(__name__)
 # to prevent memory leak on gradient checkpoint enabled training (PR #3611)
 _GEMMA4_SHARED_KV_STORE: dict = {"store": None}
 
+_ATTN_IMPLEMENTATION_ALIASES = {
+    # Transformers can rewrite flash_attention_2 to the HF hub-kernel name when
+    # the flash_attn package is absent. Axolotl may then patch the FA2 lazy
+    # imports to FA4, but ALL_ATTENTION_FUNCTIONS is still keyed by the canonical
+    # implementation name.
+    "kernels-community/flash-attn2": "flash_attention_2",
+}
+
 
 def _set_shared_kv_states(store):
     _GEMMA4_SHARED_KV_STORE["store"] = store
@@ -139,11 +147,13 @@ def _make_fused_forward(original_forward):
         if self.store_full_length_kv:
             shared_kv_states[_shared_kv_store_key(self)] = key_states, value_states
 
+        attn_implementation = getattr(self.config, "_attn_implementation", "eager")
+        attn_implementation = _ATTN_IMPLEMENTATION_ALIASES.get(
+            attn_implementation, attn_implementation
+        )
         attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[
-                self.config._attn_implementation
-            ]
+        if attn_implementation != "eager":
+            attention_interface = ALL_ATTENTION_FUNCTIONS[attn_implementation]
 
         attn_output, attn_weights = attention_interface(
             self,
